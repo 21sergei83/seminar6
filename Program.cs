@@ -1,136 +1,83 @@
-﻿using System.Net;
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
  
-ServerObject server = new ServerObject();// создаем сервер
-await server.ListenAsync(); // запускаем сервер
+string host = "127.0.0.1";
+int port = 8888;
+using TcpClient client = new TcpClient();
+Console.Write("Введите свое имя: ");
+string? userName = Console.ReadLine();
+Console.WriteLine($"Добро пожаловать, {userName}");
+StreamReader? Reader = null;
+StreamWriter? Writer = null;
  
-class ServerObject
+try
 {
-    TcpListener tcpListener = new TcpListener(IPAddress.Any, 8888); // сервер для прослушивания
-    List<ClientObject> clients = new List<ClientObject>(); // все подключения
-    protected internal void RemoveConnection(string id)
-    {
-        // получаем по id закрытое подключение
-        ClientObject? client = clients.FirstOrDefault(c => c.Id == id);
-        // и удаляем его из списка подключений
-        if (client != null) clients.Remove(client);
-        client?.Close();
-    }
-    // прослушивание входящих подключений
-    protected internal async Task ListenAsync()
-    {
-        try
-        {
-            tcpListener.Start();
-            Console.WriteLine("Сервер запущен. Ожидание подключений...");
+    client.Connect(host, port); //подключение клиента
+    Reader = new StreamReader(client.GetStream());
+    Writer = new StreamWriter(client.GetStream());
+    if (Writer is null || Reader is null) return;
+    // запускаем новый поток для получения данных
+    Task.Run(()=>ReceiveMessageAsync(Reader));
+    // запускаем ввод сообщений
+    await SendMessageAsync(Writer);
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.Message);
+}
+Writer?.Close();
+Reader?.Close();
  
-            while (true)
-            {
-                TcpClient tcpClient = await tcpListener.AcceptTcpClientAsync();
+// отправка сообщений
+async Task SendMessageAsync(StreamWriter writer)
+{
+    // сначала отправляем имя
+    await writer.WriteLineAsync(userName);
+    await writer.FlushAsync();
+    Console.WriteLine("Для отправки сообщений введите сообщение и нажмите Enter");
  
-                ClientObject clientObject = new ClientObject(tcpClient, this);
-                clients.Add(clientObject);
-                Task.Run(clientObject.ProcessAsync);
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(ex.Message);
-        }
-        finally
-        {
-            Disconnect();
-        }
-    }
- 
-    // трансляция сообщения подключенным клиентам
-    protected internal async Task BroadcastMessageAsync(string message, string id)
+    while (true)
     {
-        foreach (var client in  clients)
-        {
-            if (client.Id != id) // если id клиента не равно id отправителя
-            {
-                await client.Writer.WriteLineAsync(message); //передача данных
-                await client.Writer.FlushAsync();
-            }
-        }
-    }
-    // отключение всех клиентов
-    protected internal void Disconnect()
-    {
-        foreach (var client in clients)
-        {
-            client.Close(); //отключение клиента
-        }
-        tcpListener.Stop(); //остановка сервера
+        string? message = Console.ReadLine();
+        await writer.WriteLineAsync(message);
+        await writer.FlushAsync();
     }
 }
-class ClientObject
+// получение сообщений
+async Task ReceiveMessageAsync(StreamReader reader)
 {
-    protected internal string Id { get;} = Guid.NewGuid().ToString();
-    protected internal StreamWriter Writer { get;}
-    protected internal StreamReader Reader { get;}
- 
-    TcpClient client;
-    ServerObject server; // объект сервера
- 
-    public ClientObject(TcpClient tcpClient, ServerObject serverObject)
-    {
-        client = tcpClient;
-        server = serverObject;
-        // получаем NetworkStream для взаимодействия с сервером
-        var stream = client.GetStream();
-        // создаем StreamReader для чтения данных
-        Reader = new StreamReader(stream);
-        // создаем StreamWriter для отправки данных
-        Writer = new StreamWriter(stream);
-    }
- 
-    public async Task ProcessAsync()
+    while (true)
     {
         try
         {
-            // получаем имя пользователя
-            string? userName = await Reader.ReadLineAsync();
-            string? message = $"{userName} вошел в чат";
-            // посылаем сообщение о входе в чат всем подключенным пользователям
-            await server.BroadcastMessageAsync(message, Id);
-            Console.WriteLine(message);
-            // в бесконечном цикле получаем сообщения от клиента
-            while (true)
-            {
-                try
-                {
-                    message = await Reader.ReadLineAsync();
-                    if (message == null) continue;
-                    message = $"{userName}: {message}";
-                    Console.WriteLine(message);
-                    await server.BroadcastMessageAsync(message, Id);
-                }
-                catch
-                {
-                    message = $"{userName} покинул чат";
-                    Console.WriteLine(message);
-                    await server.BroadcastMessageAsync(message, Id);
-                    break;
-                }
-            }
+            // считываем ответ в виде строки
+            string? message = await reader.ReadLineAsync();
+            // если пустой ответ, ничего не выводим на консоль
+            if (string.IsNullOrEmpty(message)) continue; 
+            Print(message);//вывод сообщения
         }
-        catch (Exception e)
+        catch
         {
-            Console.WriteLine(e.Message);
-        }
-        finally
-        {
-            // в случае выхода из цикла закрываем ресурсы
-            server.RemoveConnection(Id);
+            break;
         }
     }
-    // закрытие подключения
-    protected internal void Close()
+}
+// чтобы полученное сообщение не накладывалось на ввод нового сообщения
+void Print(string message)
+{
+    if (OperatingSystem.IsWindows())    // если ОС Windows
     {
-        Writer.Close();
-        Reader.Close();
-        client.Close();
+        var position = Console.GetCursorPosition(); // получаем текущую позицию курсора
+        int left = position.Left;   // смещение в символах относительно левого края
+        int top = position.Top;     // смещение в строках относительно верха
+        // копируем ранее введенные символы в строке на следующую строку
+        Console.MoveBufferArea(0, top, left, 1, 0, top + 1);
+        // устанавливаем курсор в начало текущей строки
+        Console.SetCursorPosition(0, top);
+        // в текущей строке выводит полученное сообщение
+        Console.WriteLine(message);
+        // переносим курсор на следующую строку
+        // и пользователь продолжает ввод уже на следующей строке
+        Console.SetCursorPosition(left, top + 1);
     }
+    else Console.WriteLine(message);
 }
